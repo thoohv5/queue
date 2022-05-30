@@ -1,29 +1,28 @@
 package queue
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"math/rand"
 	"time"
 
-	"gorm.io/gorm"
-
-	"github.com/thoohv5/queue/model"
 	"github.com/thoohv5/queue/util"
 )
 
 type (
 	IQueue interface {
-		SendMessage(msg string) (msgId uint64, err error)
+		SendMessage(ctx context.Context, msg string) (msgId uint64, err error)
 
-		Pull() (msg *model.Queue, err error)
-		Success(queueId uint64) (err error)
-		Fail(queueId uint64) (err error)
+		Pull(ctx context.Context) (msg *Entity, err error)
+		Success(ctx context.Context, queueId uint64) (err error)
+		Fail(ctx context.Context, queueId uint64) (err error)
 
-		Clear() (err error)
-		Reset(queueId uint64) (err error)
+		Clear(ctx context.Context) (err error)
+		Reset(ctx context.Context, queueId uint64) (err error)
 	}
 	queue struct {
-		db *gorm.DB
+		db *sql.DB
 	}
 )
 
@@ -35,26 +34,36 @@ const (
 	NotMsg = "queue not msg"
 )
 
-func New(db *gorm.DB) IQueue {
+func New(db *sql.DB) IQueue {
 	return &queue{
 		db: db,
 	}
 }
 
-func (q *queue) SendMessage(msg string) (msgId uint64, err error) {
-	qm := &model.Queue{
-		Data: msg,
+func (q *queue) SendMessage(ctx context.Context, msg string) (msgId uint64, err error) {
+	res, err := q.db.ExecContext(ctx, "INSERT INTO queue(`data`) values(?)", msg)
+	if nil != err {
+		return
 	}
-	return qm.ID, q.db.Create(qm).Error
+	mi, err := res.LastInsertId()
+	return uint64(mi), err
 }
 
-func (q *queue) Pull() (msg *model.Queue, err error) {
+func (q *queue) Pull(ctx context.Context) (msg *Entity, err error) {
 
 	// 取出100组数据
 	matchMsgIdList := make([]uint64, 0, 100)
-	err = q.db.Model(&model.Queue{}).Where("lock_id", "").Where("retry_times < ?", 3).Order("id asc, retry_times asc").Limit(100).Pluck("id", &matchMsgIdList).Error
-	if nil != err && err != gorm.ErrRecordNotFound {
+	rrows, err := q.db.QueryContext(ctx, "SELECT id FROM `queue` WHERE lock_id = '' AND retry_times < ? ORDER BY id asc, retry_times asc LIMIT 100", 3)
+	if nil != err {
 		return
+	}
+
+	for rrows.Next() {
+		var matchMsgId uint64
+		if err = rrows.Scan(&matchMsgId); nil != err {
+			return
+		}
+		matchMsgIdList = append(matchMsgIdList, matchMsgId)
 	}
 
 	if len(matchMsgIdList) == 0 {
@@ -66,42 +75,37 @@ func (q *queue) Pull() (msg *model.Queue, err error) {
 	chooseMsgId := matchMsgIdList[rand.Intn(len(matchMsgIdList))]
 
 	// 数据加锁
-	err = q.db.Model(&model.Queue{}).Where("id", chooseMsgId).Update("lock_id", util.GoID()).Error
+	_, err = q.db.ExecContext(ctx, "UPDATE `queue` SET  lock_id = ? WHERE id = ?", util.GoID(), chooseMsgId)
 	if nil != err {
 		return
 	}
 
 	// 获取数据
-	msg = new(model.Queue)
-	err = q.db.Model(&model.Queue{}).Where("id", chooseMsgId).Where("lock_id", util.GoID()).First(msg).Error
-	if nil != err {
+	msg = new(Entity)
+	qrow := q.db.QueryRowContext(ctx, "SELECT id, data FROM queue WHERE id = ? AND lock_id = ?", chooseMsgId, util.GoID())
+	if err = qrow.Scan(&msg.ID, &msg.Data); nil != err {
 		return
 	}
 
 	return
 }
 
-func (q *queue) Clear() (err error) {
-	return q.db.Model(&model.Queue{}).Where("lock_id > ?", 0).Where("updated_at < ?", time.Now().Add(-3*time.Minute)).Updates(map[string]interface{}{
-		"lock_id":     "",
-		"retry_times": gorm.Expr("retry_times + ?", 1),
-	}).Error
+func (q *queue) Clear(ctx context.Context) (err error) {
+	_, err = q.db.ExecContext(ctx, "UPDATE queue SET lock_id = '', retry_times = retry_times + ? WHERE lock_id > ? AND updated_at < ? ", 1, 0, time.Now().Add(-3*time.Minute))
+	return
 }
 
-func (q *queue) Reset(queueId uint64) (err error) {
-	return q.db.Model(&model.Queue{}).Where("id", queueId).Updates(map[string]interface{}{
-		"lock_id":     "",
-		"retry_times": 0,
-	}).Error
+func (q *queue) Reset(ctx context.Context, queueId uint64) (err error) {
+	_, err = q.db.ExecContext(ctx, "UPDATE queue SET lock_id = '', retry_times = 0 WHERE id = ?", queueId)
+	return
 }
 
-func (q *queue) Success(queueId uint64) (err error) {
-	return q.db.Where("id", queueId).Delete(&model.Queue{}).Error
+func (q *queue) Success(ctx context.Context, queueId uint64) (err error) {
+	_, err = q.db.ExecContext(ctx, "DELETE FROM queue WHERE id = ?", queueId)
+	return
 }
 
-func (q *queue) Fail(queueId uint64) (err error) {
-	return q.db.Model(&model.Queue{}).Where("id", queueId).Updates(map[string]interface{}{
-		"lock_id":     "",
-		"retry_times": gorm.Expr("retry_times + ?", 1),
-	}).Error
+func (q *queue) Fail(ctx context.Context, queueId uint64) (err error) {
+	_, err = q.db.ExecContext(ctx, "UPDATE queue SET lock_id = '', retry_times = retry_times + ?, WHERE id = ?", 1, queueId)
+	return
 }

@@ -1,35 +1,34 @@
 package trick
 
 import (
+	"context"
+	"database/sql"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/thoohv5/queue/log"
-	"github.com/thoohv5/queue/model"
 	"github.com/thoohv5/queue/service/queue"
 	"github.com/thoohv5/queue/util"
 )
 
 type (
 	ITrick interface {
-		Register(execute func(msg *model.Queue) error)
+		Register(execute func(msg *queue.Entity) error)
 		Run()
 	}
-	Execute func(msg *model.Queue) error
+	Execute func(msg *queue.Entity) error
 	trick   struct {
 		q queue.IQueue
 		e Execute
 	}
 )
 
-func New(db *gorm.DB) ITrick {
+func New(db *sql.DB) ITrick {
 	return &trick{
 		q: queue.New(db),
 	}
 }
 
-func (t *trick) Register(execute func(msg *model.Queue) error) {
+func (t *trick) Register(execute func(msg *queue.Entity) error) {
 	t.e = execute
 }
 
@@ -37,7 +36,8 @@ func (t *trick) Run() {
 	for {
 		select {
 		case <-time.After(100 * time.Millisecond):
-			t.clear()
+			ctx := context.Background()
+			t.clear(ctx)
 			log.GetLogger().Debug("trick start, lock_id:%d", util.GoID())
 			if t.e == nil {
 				log.GetLogger().Debug("trick not execute")
@@ -45,7 +45,7 @@ func (t *trick) Run() {
 				continue
 			}
 			// 拉取消息
-			msg, err := t.q.Pull()
+			msg, err := t.q.Pull(ctx)
 			if nil != err {
 				// 不存在消息
 				if err.Error() != queue.NotMsg {
@@ -57,7 +57,7 @@ func (t *trick) Run() {
 			}
 
 			// 保护执行过程
-			func(msg *model.Queue) {
+			func(msg *queue.Entity) {
 				defer func() {
 					if re := recover(); re != nil {
 						log.GetLogger().Error("exec msg err, re:%+v, msg:%+v", re, msg)
@@ -69,12 +69,12 @@ func (t *trick) Run() {
 
 				if nil != err {
 					// 错误处理
-					if err = t.q.Fail(msg.ID); nil != err {
+					if err = t.q.Fail(ctx, msg.ID); nil != err {
 						log.GetLogger().Error("trick queue fail err, err:%+v, msgId:%d", err, msg.ID)
 					}
 				} else {
 					// 成功处理
-					if err = t.q.Success(msg.ID); nil != err {
+					if err = t.q.Success(ctx, msg.ID); nil != err {
 						log.GetLogger().Error("trick queue success err, err:%+v, msgId:%d", err, msg.ID)
 					}
 				}
@@ -87,8 +87,8 @@ func (t *trick) Run() {
 
 }
 
-func (t *trick) clear() {
-	if err := t.q.Clear(); nil != err {
+func (t *trick) clear(ctx context.Context) {
+	if err := t.q.Clear(ctx); nil != err {
 		log.GetLogger().Error("trick clear err, err:%+v", err)
 	}
 }
