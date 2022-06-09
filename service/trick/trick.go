@@ -17,14 +17,46 @@ type (
 	}
 	Execute func(msg *queue.Entity) error
 	trick   struct {
-		q queue.IQueue
-		e Execute
+		q   queue.IQueue
+		e   Execute
+		log log.ILog
 	}
 )
 
-func New(db *sql.DB) ITrick {
+func New(sos ...ServerOption) ITrick {
+	opts := new(Options)
+	for _, so := range sos {
+		so(opts)
+	}
+
 	return &trick{
-		q: queue.New(db),
+		q:   queue.New(opts.db),
+		log: log.GetLogger(opts.log, opts.enableLogger),
+	}
+}
+
+// Options 可选参数列表
+type Options struct {
+	db *sql.DB
+
+	enableLogger bool
+	log          log.ILog
+}
+
+// ServerOption 为可选参数赋值的函数
+type ServerOption func(*Options)
+
+// WithDB 是否为写库
+func WithDB(db *sql.DB) ServerOption {
+	return func(o *Options) {
+		o.db = db
+	}
+}
+
+func WithLogger(log log.ILog) ServerOption {
+	return func(o *Options) {
+		o.enableLogger = true
+		o.log = log
 	}
 }
 
@@ -38,10 +70,10 @@ func (t *trick) Run() {
 		case <-time.After(100 * time.Millisecond):
 			ctx := context.Background()
 			t.clear(ctx)
-			log.GetLogger().Debug("trick start, lock_id:%d", util.GoID())
+			t.log.Debug("trick start, lock_id:%d", util.GoID())
 			if t.e == nil {
-				log.GetLogger().Debug("trick not execute")
-				log.GetLogger().Debug("trick end, lock_id:%d", util.GoID())
+				t.log.Debug("trick not execute")
+				t.log.Debug("trick end, lock_id:%d", util.GoID())
 				continue
 			}
 			// 拉取消息
@@ -49,10 +81,10 @@ func (t *trick) Run() {
 			if nil != err {
 				// 不存在消息
 				if err.Error() != queue.NotMsg {
-					log.GetLogger().Error("trick queue pull err, err:+v", err)
+					t.log.Error("trick queue pull err, err:+v", err)
 				}
-				log.GetLogger().Debug("trick not msg")
-				log.GetLogger().Debug("trick end, lock_id:%d", util.GoID())
+				t.log.Debug("trick not msg")
+				t.log.Debug("trick end, lock_id:%d", util.GoID())
 				continue
 			}
 
@@ -60,7 +92,7 @@ func (t *trick) Run() {
 			func(msg *queue.Entity) {
 				defer func() {
 					if re := recover(); re != nil {
-						log.GetLogger().Error("exec msg err, re:%+v, msg:%+v", re, msg)
+						t.log.Error("exec msg err, re:%+v, msg:%+v", re, msg)
 					}
 					return
 				}()
@@ -70,18 +102,18 @@ func (t *trick) Run() {
 				if nil != err {
 					// 错误处理
 					if err = t.q.Fail(ctx, msg.ID); nil != err {
-						log.GetLogger().Error("trick queue fail err, err:%+v, msgId:%d", err, msg.ID)
+						t.log.Error("trick queue fail err, err:%+v, msgId:%d", err, msg.ID)
 					}
 				} else {
 					// 成功处理
 					if err = t.q.Success(ctx, msg.ID); nil != err {
-						log.GetLogger().Error("trick queue success err, err:%+v, msgId:%d", err, msg.ID)
+						t.log.Error("trick queue success err, err:%+v, msgId:%d", err, msg.ID)
 					}
 				}
 
 			}(msg)
 
-			log.GetLogger().Debug("trick end, lock_id:%d", util.GoID())
+			t.log.Debug("trick end, lock_id:%d", util.GoID())
 		}
 	}
 
@@ -89,6 +121,6 @@ func (t *trick) Run() {
 
 func (t *trick) clear(ctx context.Context) {
 	if err := t.q.Clear(ctx); nil != err {
-		log.GetLogger().Error("trick clear err, err:%+v", err)
+		t.log.Error("trick clear err, err:%+v", err)
 	}
 }

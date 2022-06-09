@@ -9,17 +9,14 @@ type ILog interface {
 	Error(msg string, values ...interface{})
 }
 
-var l ILog
-
-func GetLogger() ILog {
-	if l == nil {
-		l = NewDefaultLogger()
+func GetLogger(log ILog, flag bool) ILog {
+	if !flag {
+		return NewEmptyLogger()
 	}
-	return l
-}
-
-func SetLogger(log ILog) {
-	l = log
+	if log == nil {
+		log = NewDefaultLogger()
+	}
+	return log
 }
 
 type defaultLogger struct {
@@ -44,4 +41,23 @@ func (dl *defaultLogger) Warn(msg string, values ...interface{}) {
 
 func (dl *defaultLogger) Error(msg string, values ...interface{}) {
 	log.Printf(msg, values...)
+}
+
+type emptyLogger struct {
+}
+
+func NewEmptyLogger() ILog {
+	return &emptyLogger{}
+}
+
+func (dl *emptyLogger) Debug(msg string, values ...interface{}) {
+}
+
+func (dl *emptyLogger) Info(msg string, values ...interface{}) {
+}
+
+func (dl *emptyLogger) Warn(msg string, values ...interface{}) {
+}
+
+func (dl *emptyLogger) Error(msg string, values ...interface{}) {
 }
