@@ -106,6 +106,6 @@ func (q *queue) Success(ctx context.Context, queueId uint64) (err error) {
 }
 
 func (q *queue) Fail(ctx context.Context, queueId uint64) (err error) {
-	_, err = q.db.ExecContext(ctx, "UPDATE queue SET lock_id = '', retry_times = retry_times + ?, WHERE id = ?", 1, queueId)
+	_, err = q.db.ExecContext(ctx, "UPDATE queue SET lock_id = '', retry_times = retry_times + ? WHERE id = ?", 1, queueId)
 	return
 }
